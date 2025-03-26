@@ -108,6 +108,7 @@ TelegramFallAlarm/
 │       └── logger.py
 ├── handlers/
 │   ├── __init__.py
+|   ├── __example.py
 │   ├── base.py
 │   └── channel_monitor.py
 ├── main.py
