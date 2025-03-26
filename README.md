@@ -56,15 +56,9 @@ venv\Scripts\activate     # Windows
 pip install -r requirements.txt
 ```
 
-4. Создайте файл `.env` на основе `.env.example`:
-
-```bash
-cp .env.example .env
-```
-
 ## Настройка
 
-Отредактируйте файл `.env`:
+Файл `.env` уже содержит все необходимые настройки (p.s не считая telegram bot token). При необходимости вы можете изменить следующие параметры:
 
 ```env
 # Telegram Bot Settings
@@ -118,6 +112,7 @@ TelegramFallAlarm/
 │   └── channel_monitor.py
 ├── main.py
 ├── requirements.txt
+├── .env
 └── README.md
 ```
 
