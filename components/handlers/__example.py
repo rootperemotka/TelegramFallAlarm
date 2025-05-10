@@ -1,7 +1,6 @@
-from aiogram import F
 from aiogram.filters import Command
 from aiogram.types import Message
-from handlers.base import BaseRouter
+from components.handlers.base import BaseRouter
 
 # <-- Dataclass test -->
 # ps. this file is not used in the project

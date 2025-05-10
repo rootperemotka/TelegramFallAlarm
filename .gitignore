@@ -1,4 +1,4 @@
 __pycache__/
 *.log
-venv/
-dev_clean.sh
+components/logs
+*.log

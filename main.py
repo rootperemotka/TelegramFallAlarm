@@ -1,9 +1,8 @@
 from components.modules import (
-    EnvLoader,
+    EnvReader,
     Logger
 )
 
-from typing import Optional
 import asyncio
 import importlib
 import os
@@ -15,16 +14,14 @@ from aiogram import (
 )
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-import argparse
-from handlers.base import BaseRouter
+from components.handlers.base import BaseRouter
 
 
 class App:
     def __init__(
-        self,
-        default_env: Optional[str] = '.env'
+        self
     ) -> None:
-        self.env: EnvLoader = EnvLoader(default_env)
+        self.env: EnvReader = EnvReader()
         self.logger: Logger = self._logger_init()
         self.bot: Bot = None
         self.dp: Dispatcher = None
@@ -39,12 +36,19 @@ class App:
         return Logger(**logger_settings)
         
     def _init_routers(self):
-        handlers_dir = os.path.dirname(os.path.abspath(__file__))
-        handlers_path = os.path.join(handlers_dir, 'handlers')
+        handlers_path = self.env.TELEGRAM_HANDLERS_PATH
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        full_handlers_path = os.path.join(base_dir, handlers_path)
         
-        for filename in os.listdir(handlers_path):
+        if not os.path.exists(full_handlers_path):
+            self.logger.error(f"Директория обработчиков не найдена: {full_handlers_path}")
+            return
+            
+        for filename in os.listdir(full_handlers_path):
             if filename.endswith('.py') and not filename.startswith('__'):
-                module_name = f'handlers.{filename[:-3]}'
+                module_path = handlers_path.replace('/', '.')
+                module_name = f"{module_path}.{filename[:-3]}"
+                
                 try:
                     module = importlib.import_module(module_name)
                     for name, obj in inspect.getmembers(module):
@@ -84,16 +88,7 @@ class App:
         asyncio.run(self.start())
         
 def main():
-    parser = argparse.ArgumentParser(description = 'Telegram Fall Alarm Bot')
-    parser.add_argument(
-        '--env',
-        type=str,
-        default='.env',
-        help='Путь к файлу с переменными окружения (по умолчанию: .env)'
-    )
-    args = parser.parse_args()
-    
-    app = App(default_env=args.env)
+    app = App()
     app.run()
 
 
