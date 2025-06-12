@@ -4,15 +4,16 @@ from aiogram.types import Message
 from components.handlers.base import BaseRouter
 from components.modules import ZvonoBot
 import asyncio
+import aiohttp
 from datetime import datetime
 from functools import wraps
-from typing import Any, List
+from typing import Any, List, Dict
 
-class ChannelMonitorRouter(BaseRouter):
+class ApiMonitorRouter(BaseRouter):
     def __post_init__(self):
         super().__post_init__()
         self._register_handlers()
-        self.last_message_time = datetime.now()
+        self.last_successful_check = datetime.now()
         self.monitoring_task = None
         
     def _get_env_value(self, key: str, expected_type: type = str) -> Any:
@@ -27,17 +28,14 @@ class ChannelMonitorRouter(BaseRouter):
             Any: Значение переменной окружения нужного типа или значение по умолчанию
         """
         try:
-            # Сначала пробуем получить значение через атрибут
             value = getattr(self.env, key, None)
             
-            # Если значение не найдено, возвращаем значение по умолчанию для типа
             if value is None:
                 self.logger.warning(f"Переменная {key} не найдена, возвращается значение по умолчанию")
                 return [] if expected_type == list else expected_type()
             
-            # Преобразуем в нужный тип, если необходимо
             if expected_type == list and isinstance(value, str):
-                    return [v.strip() for v in value.split(",")]
+                return [v.strip() for v in value.split(",")]
             elif expected_type == list:
                 return value if isinstance(value, list) else []
             elif expected_type == int and not isinstance(value, int):
@@ -69,28 +67,48 @@ class ChannelMonitorRouter(BaseRouter):
             await message.answer("⛔️ У вас нет доступа к этому боту")
         return wrapper
         
+    def _parse_headers(self, headers_str: str) -> Dict[str, str]:
+        """
+        Парсинг строки заголовков в словарь.
+        
+        Args:
+            headers_str (str): Строка заголовков в формате key1:value1,key2:value2
+            
+        Returns:
+            Dict[str, str]: Словарь заголовков
+        """
+        if not headers_str:
+            return {}
+            
+        headers = {}
+        for header in headers_str.split(','):
+            if ':' in header:
+                key, value = header.split(':', 1)
+                headers[key.strip()] = value.strip()
+        return headers
+        
     def _register_handlers(self):
         @self.router.message(Command("start"))
         @self._check_access
         async def cmd_start(message: Message):
             timeout = self._get_env_value("ALARM_TIMEOUT_FOR_MESSAGE", int)
             monitor_timeout = self._get_env_value("ALARM_MONITOR_TIMEOUT", int)
-            channel_id = self._get_env_value("ALARM_MONITOR_CHANNEL_ID")
-            author_id = self._get_env_value("ALARM_MESSAGE_AUTHOR_ID")
+            api_url = self._get_env_value("ALARM_API_URL")
+            api_method = self._get_env_value("ALARM_API_METHOD")
             notify_users = self._get_env_value("ALARM_USERS_ID_NOTIFICATION", list)
             phones_for_call = self._get_env_value("ALARM_PHONES_FOR_CALL", list)
             
             help_text = (
-                "👋 Привет! Я бот для мониторинга каналов.\n\n"
+                "👋 Привет! Я бот для мониторинга API.\n\n"
                 "📝 Доступные команды:\n"
-                "/start_monitoring - Запустить мониторинг каналов\n"
+                "/start_monitoring - Запустить мониторинг API\n"
                 "/stop_monitoring - Остановить мониторинг\n"
                 "/status - Показать текущий статус мониторинга\n\n"
                 "⚙️ Настройки в .env:\n"
                 f"• Таймаут: {timeout} сек\n"
                 f"• Интервал проверки: {monitor_timeout} сек\n"
-                f"• Мониторинг: {'всех каналов' if channel_id == 'auto' else f'канала {channel_id}'}\n"
-                f"• Автор сообщений: {'все' if author_id == 'all' else author_id}\n"
+                f"• API URL: {api_url}\n"
+                f"• Метод: {api_method}\n"
                 f"• Получатели уведомлений: {'все' if 'all' in notify_users else ', '.join(notify_users)}\n"
                 f"• Телефоны для звонков: {', '.join(phones_for_call) if phones_for_call else 'не указаны'}\n\n"
                 "ℹ️ Для начала работы отправьте /start_monitoring"
@@ -101,25 +119,25 @@ class ChannelMonitorRouter(BaseRouter):
         @self._check_access
         async def cmd_status(message: Message):
             if self.monitoring_task and not self.monitoring_task.done():
-                time_since_last = (datetime.now() - self.last_message_time).total_seconds()
+                time_since_last = (datetime.now() - self.last_successful_check).total_seconds()
                 monitor_timeout = self._get_env_value("ALARM_MONITOR_TIMEOUT", int)
                 status_text = (
-                    "📊 Статус мониторинга:\n\n"
+                    "📊 Статус мониторинга API:\n\n"
                     f"• Мониторинг: ✅ Активен\n"
-                    f"• Последнее сообщение: {self.last_message_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"• Последняя успешная проверка: {self.last_successful_check.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"• Прошло времени: {int(time_since_last)} сек\n"
                     f"• Следующая проверка через: {max(0, monitor_timeout - time_since_last):.0f} сек"
                 )
             else:
-                status_text = "📊 Статус мониторинга:\n\n• Мониторинг: ❌ Неактивен"
+                status_text = "📊 Статус мониторинга API:\n\n• Мониторинг: ❌ Неактивен"
             await message.answer(status_text)
             
         @self.router.message(Command("start_monitoring"))
         @self._check_access
         async def cmd_start_monitoring(message: Message):
             if self.monitoring_task is None or self.monitoring_task.done():
-                self.monitoring_task = asyncio.create_task(self._monitor_channel(message))
-                await message.answer("🔍 Мониторинг канала запущен")
+                self.monitoring_task = asyncio.create_task(self._monitor_api(message))
+                await message.answer("🔍 Мониторинг API запущен")
             else:
                 await message.answer("⚠️ Мониторинг уже запущен")
                 
@@ -128,42 +146,46 @@ class ChannelMonitorRouter(BaseRouter):
         async def cmd_stop_monitoring(message: Message):
             if self.monitoring_task and not self.monitoring_task.done():
                 self.monitoring_task.cancel()
-                await message.answer("🛑 Мониторинг канала остановлен")
+                await message.answer("🛑 Мониторинг API остановлен")
             else:
                 await message.answer("⚠️ Мониторинг не был запущен")
                 
-        @self.router.message(F.chat.type.in_({"channel", "group"}))
-        async def handle_channel_message(message: Message):
-            self.last_message_time = datetime.now()
+    async def _check_api(self) -> bool:
+        """
+        Проверка доступности API.
+        
+        Returns:
+            bool: True если API доступен, False в противном случае
+        """
+        try:
+            api_url = self._get_env_value("ALARM_API_URL")
+            api_method = self._get_env_value("ALARM_API_METHOD")
+            headers = self._parse_headers(self._get_env_value("ALARM_API_HEADERS"))
+            body = self._get_env_value("ALARM_API_BODY")
             
-    async def _monitor_channel(self, notification_message: Message):
-        while True:
-            try:
-                current_time = datetime.now()
-                time_diff = (current_time - self.last_message_time).total_seconds()
-                timeout = self._get_env_value("ALARM_TIMEOUT_FOR_MESSAGE", int)
-                monitor_timeout = self._get_env_value("ALARM_MONITOR_TIMEOUT", int)
-                
-                if time_diff > timeout:
-                    await self._send_notification(notification_message)
-                    self.last_message_time = current_time
+            async with aiohttp.ClientSession() as session:
+                if api_method.upper() == "GET":
+                    async with session.get(api_url, headers=headers) as response:
+                        return response.status == 200
+                elif api_method.upper() == "POST":
+                    async with session.post(api_url, headers=headers, data=body) as response:
+                        return response.status == 200
+                else:
+                    self.logger.error(f"Неподдерживаемый метод API: {api_method}")
+                    return False
                     
-                await asyncio.sleep(monitor_timeout)
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.logger.error(f"Ошибка в мониторинге канала: {e}")
-                await asyncio.sleep(monitor_timeout)
-    
-    async def _make_alarm_calls(self, phones: List[str], channel_info: str, timeout: int):
+        except Exception as e:
+            self.logger.error(f"Ошибка при проверке API: {e}")
+            return False
+            
+    async def _make_alarm_calls(self, phones: List[str], api_info: str, timeout: int):
         """
         Выполняет звонки на указанные номера с уведомлением о тревоге.
         
         Args:
             phones (List[str]): Список телефонных номеров
-            channel_info (str): Информация о канале
-            timeout (int): Время отсутствия сообщений в секундах
+            api_info (str): Информация об API
+            timeout (int): Время недоступности API в секундах
         """
         try:
             if not phones:
@@ -182,7 +204,7 @@ class ChannelMonitorRouter(BaseRouter):
             # Получаем сообщение для звонка
             message = self._get_env_value("ZVONOBOT_MESSAGE")
             if not message:
-                message = f"Внимание! В {channel_info} не было новых сообщений более {timeout} секунд. Требуется проверка системы."
+                message = f"Внимание! API {api_info} недоступен более {timeout} секунд. Требуется проверка системы."
                 
             # Создаем экземпляр Звонобота
             zvonobot = ZvonoBot(api_key=api_key)
@@ -204,26 +226,49 @@ class ChannelMonitorRouter(BaseRouter):
                 
     async def _send_notification(self, notification_message: Message):
         try:
-            channel_id = self._get_env_value("ALARM_MONITOR_CHANNEL_ID")
+            api_url = self._get_env_value("ALARM_API_URL")
             timeout = self._get_env_value("ALARM_TIMEOUT_FOR_MESSAGE", int)
-            channel_info = "всех каналах" if channel_id == "auto" else f"канале {channel_id}"
             
             notification_text = (
                 f"⚠️ ВНИМАНИЕ!\n\n"
-                f"В {channel_info} не было новых сообщений "
+                f"API {api_url} недоступен "
                 f"более {timeout} секунд!\n"
-                f"Последнее сообщение было: {self.last_message_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"Последняя успешная проверка была: {self.last_successful_check.strftime('%Y-%m-%d %H:%M:%S')}"
             )
             
             # Отправляем уведомление в Telegram
             await notification_message.answer(notification_text)
-            self.logger.warning(f"Отправлено уведомление о отсутствии сообщений в {channel_info}")
+            self.logger.warning(f"Отправлено уведомление о недоступности API {api_url}")
             
             # Получаем список телефонов для звонка
             phones = self._get_env_value("ALARM_PHONES_FOR_CALL", list)
             
             # Отправляем звонки
-            await self._make_alarm_calls(phones, channel_info, timeout)
+            await self._make_alarm_calls(phones, api_url, timeout)
             
         except Exception as e:
-            self.logger.error(f"Ошибка при отправке уведомления: {e}") 
+            self.logger.error(f"Ошибка при отправке уведомления: {e}")
+            
+    async def _monitor_api(self, notification_message: Message):
+        while True:
+            try:
+                current_time = datetime.now()
+                time_diff = (current_time - self.last_successful_check).total_seconds()
+                timeout = self._get_env_value("ALARM_TIMEOUT_FOR_MESSAGE", int)
+                monitor_timeout = self._get_env_value("ALARM_MONITOR_TIMEOUT", int)
+                
+                is_api_available = await self._check_api()
+                
+                if is_api_available:
+                    self.last_successful_check = current_time
+                elif time_diff > timeout:
+                    await self._send_notification(notification_message)
+                    self.last_successful_check = current_time
+                    
+                await asyncio.sleep(monitor_timeout)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Ошибка в мониторинге API: {e}")
+                await asyncio.sleep(monitor_timeout) 

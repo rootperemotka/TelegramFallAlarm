@@ -44,22 +44,25 @@ class App:
             self.logger.error(f"Директория обработчиков не найдена: {full_handlers_path}")
             return
             
-        for filename in os.listdir(full_handlers_path):
-            if filename.endswith('.py') and not filename.startswith('__'):
-                module_path = handlers_path.replace('/', '.')
-                module_name = f"{module_path}.{filename[:-3]}"
-                
-                try:
-                    module = importlib.import_module(module_name)
-                    for name, obj in inspect.getmembers(module):
-                        if (inspect.isclass(obj) and 
-                            issubclass(obj, BaseRouter) and 
-                            obj != BaseRouter):
-                            router_instance = obj(self.env, self.logger)
-                            self.dp.include_router(router_instance.router)
-                            self.logger.info(f"Загружен роутер: {name}")
-                except Exception as e:
-                    self.logger.error(f"Ошибка при загрузке роутера {module_name}: {e}")
+        # Определяем режим мониторинга
+        monitor_mode = self.env.get("ALARM_MONITOR_MODE", "channel").lower()
+        
+        # Выбираем нужный роутер в зависимости от режима
+        if monitor_mode == "api":
+            router_module = "components.handlers.api_monitor"
+            router_class = "ApiMonitorRouter"
+        else:  # channel или любое другое значение
+            router_module = "components.handlers.channel_monitor"
+            router_class = "ChannelMonitorRouter"
+            
+        try:
+            module = importlib.import_module(router_module)
+            router_class_obj = getattr(module, router_class)
+            router_instance = router_class_obj(self.env, self.logger)
+            self.dp.include_router(router_instance.router)
+            self.logger.info(f"Загружен роутер: {router_class} (режим: {monitor_mode})")
+        except Exception as e:
+            self.logger.error(f"Ошибка при загрузке роутера {router_module}.{router_class}: {e}")
         
     async def _init_bot(self):
         if not self.env.TELEGRAM_BOT_TOKEN:
