@@ -39,30 +39,49 @@ class App:
         handlers_path = self.env.TELEGRAM_HANDLERS_PATH
         base_dir = os.path.dirname(os.path.abspath(__file__))
         full_handlers_path = os.path.join(base_dir, handlers_path)
-        
+
         if not os.path.exists(full_handlers_path):
             self.logger.error(f"Директория обработчиков не найдена: {full_handlers_path}")
             return
-            
-        # Определяем режим мониторинга
-        monitor_mode = self.env.get("ALARM_MONITOR_MODE", "channel").lower()
-        
-        # Выбираем нужный роутер в зависимости от режима
-        if monitor_mode == "api":
-            router_module = "components.handlers.api_monitor"
-            router_class = "ApiMonitorRouter"
-        else:  # channel или любое другое значение
-            router_module = "components.handlers.channel_monitor"
-            router_class = "ChannelMonitorRouter"
-            
-        try:
-            module = importlib.import_module(router_module)
-            router_class_obj = getattr(module, router_class)
-            router_instance = router_class_obj(self.env, self.logger)
-            self.dp.include_router(router_instance.router)
-            self.logger.info(f"Загружен роутер: {router_class} (режим: {monitor_mode})")
-        except Exception as e:
-            self.logger.error(f"Ошибка при загрузке роутера {router_module}.{router_class}: {e}")
+
+        # Определяем нужный монитор по ALARM_MONITOR_MODE
+        monitor_mode = str(getattr(self.env, 'ALARM_MONITOR_MODE', 'api')).lower()
+        monitor_map = {
+            'api': 'api_monitor.py',
+            'channel': 'channel_monitor.py',
+        }
+        monitor_filename = monitor_map.get(monitor_mode)
+        # Сначала динамически загружаем все, кроме api_monitor и channel_monitor
+        for filename in os.listdir(full_handlers_path):
+            if filename.endswith('.py') and not filename.startswith('__') and filename not in monitor_map.values():
+                module_path = handlers_path.replace('/', '.')
+                module_name = f"{module_path}.{filename[:-3]}"
+                try:
+                    module = importlib.import_module(module_name)
+                    for name, obj in inspect.getmembers(module):
+                        if (inspect.isclass(obj) and 
+                            issubclass(obj, BaseRouter) and 
+                            obj != BaseRouter):
+                            router_instance = obj(self.env, self.logger)
+                            self.dp.include_router(router_instance.router)
+                            self.logger.info(f"Загружен роутер: {name}")
+                except Exception as e:
+                    self.logger.error(f"Ошибка при загрузке роутера {module_name}: {e}")
+        # Теперь загружаем только нужный монитор
+        if monitor_filename:
+            module_path = handlers_path.replace('/', '.')
+            module_name = f"{module_path}.{monitor_filename[:-3]}"
+            try:
+                module = importlib.import_module(module_name)
+                for name, obj in inspect.getmembers(module):
+                    if (inspect.isclass(obj) and 
+                        issubclass(obj, BaseRouter) and 
+                        obj != BaseRouter):
+                        router_instance = obj(self.env, self.logger)
+                        self.dp.include_router(router_instance.router)
+                        self.logger.info(f"Загружен роутер: {name}")
+            except Exception as e:
+                self.logger.error(f"Ошибка при загрузке роутера {module_name}: {e}")
         
     async def _init_bot(self):
         if not self.env.TELEGRAM_BOT_TOKEN:
